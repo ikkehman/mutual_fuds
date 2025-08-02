@@ -1,6 +1,6 @@
 module golang
 
-go 1.24.5
+go 1.21.13
 
 require github.com/golang-jwt/jwt v3.2.2+incompatible
 
