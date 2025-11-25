@@ -173,7 +173,8 @@ func (mpc *MyPortfolioController) GetPortfolioByID(c *gin.Context) {
 	log.Printf("Found portfolio: %+v", fundData)
 
 	cperiod := "custom"
-	startdate := fundData.Date.Format("2006-01-02")
+	// Mulai dari hari sebelumnya (-1 hari) untuk mendapatkan nilai awal
+	startdate := fundData.Date.AddDate(0, 0, -1).Format("2006-01-02")
 	enddate := time.Now().Format("2006-01-02")
 
 	body, err := utils.GetMutualFundNav(mpc.DB, fundData.MutualFundID, cperiod, startdate, enddate)
@@ -245,16 +246,13 @@ func (mpc *MyPortfolioController) GetPortfolioByID(c *gin.Context) {
 			continue
 		}
 
+		// Hari pertama (hari sebelum portfolio masuk) - simpan sebagai prevValue, tidak ditampilkan
 		if i == 0 {
-			results = append(results, NavResult{
-				Date:        nav.Date,
-				Value:       val,
-				TotalBalance: modal, // balance awal = modal
-			})
 			prevValue = val
 			continue
 		}
 
+		// Hitung kenaikan dan keuntungan
 		diff := val - prevValue
 		persen := 0.0
 		if prevValue != 0 {
@@ -282,6 +280,195 @@ func (mpc *MyPortfolioController) GetPortfolioByID(c *gin.Context) {
 		"portfolio":    fundData,
 		"nav_data":     results,
 		"product_name": productName,
+	})
+}
+
+func (mpc *MyPortfolioController) GetAggregatedPortfolioByMutualFundID(c *gin.Context) {
+	mutualFundID := c.Param("id")
+
+	// Ambil ID user dari context
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(400, gin.H{"error": "User ID not found"})
+		return
+	}
+
+	// Ambil semua portfolio dengan mutual_fund_id yang sama untuk user ini
+	var portfolios []MyPortfolio
+	if err := mpc.DB.Where("mutual_fund_id = ? AND user_id = ? AND deleted_at IS NULL", mutualFundID, userID).Order("date ASC").Find(&portfolios).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch portfolios"})
+		return
+	}
+
+	if len(portfolios) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No portfolios found for this mutual fund"})
+		return
+	}
+
+	// Tentukan tanggal awal (dari portfolio pertama) dan tanggal akhir (hari ini)
+	// Mulai dari hari sebelumnya (-1 hari) untuk mendapatkan nilai awal
+	startDate := portfolios[0].Date.AddDate(0, 0, -1)
+	endDate := time.Now()
+
+	// Fetch NAV data
+	cperiod := "custom"
+	startDateStr := startDate.Format("2006-01-02")
+	endDateStr := endDate.Format("2006-01-02")
+
+	// Parse mutual fund ID for API call
+	mfID, err := strconv.ParseUint(mutualFundID, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid mutual fund ID"})
+		return
+	}
+
+	body, err := utils.GetMutualFundNav(mpc.DB, uint(mfID), cperiod, startDateStr, endDateStr)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch NAV data from Bareksa",
+			"detail": err.Error(),
+		})
+		return
+	}
+
+	type NAV struct {
+		Date  string `json:"date"`
+		Value string `json:"value"`
+	}
+
+	type FundData struct {
+		PName string `json:"pname"`
+		Nav   []NAV  `json:"nav"`
+	}
+
+	type ResponseData struct {
+		Datas []FundData `json:"datas"`
+	}
+
+	type BareksaResponse struct {
+		Status bool         `json:"status"`
+		Data   ResponseData `json:"data"`
+	}
+
+	var response BareksaResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to parse NAV data",
+			"detail": err.Error(),
+		})
+		return
+	}
+
+	if len(response.Data.Datas) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "NAV data not found in response"})
+		return
+	}
+
+	navRaw := response.Data.Datas[0].Nav
+	productName := response.Data.Datas[0].PName
+
+	// Buat map untuk mencari portfolio berdasarkan tanggal
+	portfoliosByDate := make(map[string]float64) // date -> modal amount
+	for _, portfolio := range portfolios {
+		dateKey := portfolio.Date.Format("2006-01-02")
+		portfoliosByDate[dateKey] += portfolio.Value
+	}
+
+	type NavResult struct {
+		Date                    string  `json:"date"`
+		Value                   float64 `json:"value"`
+		KenaikanHariIni         float64 `json:"kenaikan_hari_ini"`
+		PersenKenaikanHariIni   float64 `json:"persen_kenaikan_hari_ini"`
+		TotalModal              float64 `json:"total_modal"`
+		KeuntunganHariIni       float64 `json:"keuntungan_hari_ini"`
+		PersenKeuntunganHariIni float64 `json:"persen_keuntungan_hari_ini"`
+		AkumulasiKeuntungan     float64 `json:"akumulasi_keuntungan"`
+		TotalBalance            float64 `json:"total_balance"`
+	}
+
+	var results []NavResult
+	var prevValue float64
+	var totalModal float64
+	
+	// Akumulasi keuntungan per tanggal masuk portfolio
+	akumulasiPerEntry := make(map[string]float64)
+
+	for i, nav := range navRaw {
+		val, err := strconv.ParseFloat(nav.Value, 64)
+		if err != nil {
+			continue
+		}
+
+		navDate, err := time.Parse("2006-01-02", nav.Date)
+		if err != nil {
+			continue
+		}
+
+		// Hari pertama (hari sebelum portfolio pertama masuk) - skip tampilan, hanya simpan prevValue
+		if i == 0 {
+			prevValue = val
+			continue
+		}
+
+		// Check if ada portfolio baru masuk hari ini
+		dateKey := navDate.Format("2006-01-02")
+		if newModalAmount, exists := portfoliosByDate[dateKey]; exists {
+			totalModal += newModalAmount
+			akumulasiPerEntry[dateKey] = 0.0
+			log.Printf("New portfolio entry on %s with value %f, total modal now: %f", dateKey, newModalAmount, totalModal)
+		}
+
+		// Hitung persen kenaikan hari ini
+		diff := val - prevValue
+		persen := 0.0
+		if prevValue != 0 {
+			persen = (diff / prevValue) * 100
+		}
+
+		// Hitung keuntungan dan akumulasi untuk setiap portfolio yang sudah aktif
+		totalModalToday := 0.0
+		keuntunganHariIni := 0.0
+		totalAkumulasi := 0.0
+		
+		for entryDate, entryModal := range portfoliosByDate {
+			parsedEntryDate, _ := time.Parse("2006-01-02", entryDate)
+			
+			// Portfolio yang masuk sebelum atau pada hari ini ikut dihitung
+			if parsedEntryDate.Before(navDate) || parsedEntryDate.Equal(navDate) {
+				totalModalToday += entryModal
+				
+				// Keuntungan hari ini untuk portfolio ini
+				rpGain := persen * entryModal / 100
+				keuntunganHariIni += rpGain
+				
+				// Update akumulasi untuk portfolio ini
+				akumulasiPerEntry[entryDate] += rpGain
+				totalAkumulasi += akumulasiPerEntry[entryDate]
+			}
+		}
+
+		totalBalance := totalModalToday + totalAkumulasi
+
+		results = append(results, NavResult{
+			Date:                    nav.Date,
+			Value:                   val,
+			KenaikanHariIni:         diff,
+			PersenKenaikanHariIni:   persen,
+			TotalModal:              totalModalToday,
+			KeuntunganHariIni:       keuntunganHariIni,
+			PersenKeuntunganHariIni: persen,
+			AkumulasiKeuntungan:     totalAkumulasi,
+			TotalBalance:            totalBalance,
+		})
+
+		prevValue = val
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"portfolios":   portfolios,
+		"nav_data":     results,
+		"product_name": productName,
+		"total_modal":  totalModal,
 	})
 }
 
