@@ -144,19 +144,16 @@ func (mpc *MyPortfolioController) UpdatePortfolio(c *gin.Context) {
 }	
 
 func (mpc *MyPortfolioController) DeletePortfolio(c *gin.Context) {
-	var portfolio MyPortfolio
-	if err := c.ShouldBindJSON(&portfolio); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid input"})
-		return
-	}
-
+	id := c.Param("id")
+	
 	// Ambil ID user dari context
 	userID, exists := c.Get("userID")
 	if !exists {
 		c.JSON(400, gin.H{"error": "User ID not found"})
 		return
 	}
-	if err := mpc.DB.Model(&MyPortfolio{}).Where("id = ? AND user_id = ?", portfolio.ID, userID).Update("deleted_at", time.Now()).Error; err != nil {
+	
+	if err := mpc.DB.Model(&MyPortfolio{}).Where("id = ? AND user_id = ?", id, userID).Update("deleted_at", time.Now()).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to delete portfolio"})
 		return
 	}
