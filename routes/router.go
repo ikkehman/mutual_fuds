@@ -77,6 +77,7 @@ func SetupRouter() *gin.Engine {
 		auth.PUT("/portfolio/:id", MyPortfolioController.UpdatePortfolio)
 		auth.DELETE("/portfolio/:id", MyPortfolioController.DeletePortfolio)
 		auth.GET("/portfolio/:id/nav", MyPortfolioController.GetPortfolioByID)
+		auth.GET("/portfolio/mutual-fund/:id/aggregated", MyPortfolioController.GetAggregatedPortfolioByMutualFundID)
 		auth.POST("/logout", authController.Logout)
 	}
 
