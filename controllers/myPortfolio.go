@@ -91,7 +91,7 @@ func (mpc *MyPortfolioController) UpdatePortfolio(c *gin.Context) {
 	updatedPortfolio.UserID = userID.(uint)
 
 	if err := mpc.DB.Model(&MyPortfolio{}).Where("id = ? AND user_id = ? AND deleted_at IS NULL", updatedPortfolio.ID, updatedPortfolio.UserID).Updates(updatedPortfolio).Error; err != nil {
-		c.JSON(500, gin.H{"error": "Failed to update portfolio"})
+		c.JSON(500, gin.H{"error": "Failed to update portfolio :("})
 		return
 	}
 
