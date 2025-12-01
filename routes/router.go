@@ -1,13 +1,14 @@
 package routes
 
 import (
-	"fmt"
 	"golang/controllers"
 	"golang/middlewares"
 	"golang/models"
 	"log"
 	"os"
-	"runtime/debug"
+	"time"
+
+	"github.com/gin-contrib/cors"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -31,6 +32,19 @@ func SetupRouter() *gin.Engine {
 		log.Fatal("Migration failed: ", err)
 	}
 
+	// Gunakan hanya satu router
+	router := gin.Default()
+
+	// Tambahkan middleware CORS ke router ini
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:8080"}, // ubah dari "*" agar support credentials
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+
 	// Connect to Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     os.Getenv("REDIS_ADDR"),
@@ -44,9 +58,7 @@ func SetupRouter() *gin.Engine {
 	mutualFundController := controllers.NewMutualFundController(db)
 	bareksaController := controllers.NewBareksaController()
 	MyPortfolioController := controllers.NewMyPortfolioController(db)
-
-	// Router
-	router := gin.Default()
+	predictionController := controllers.NewPredictionController(db)
 
 	// Public routes
 	router.POST("/register", authController.Register)
@@ -66,7 +78,14 @@ func SetupRouter() *gin.Engine {
 		auth.PUT("/portfolio/:id", MyPortfolioController.UpdatePortfolio)
 		auth.DELETE("/portfolio/:id", MyPortfolioController.DeletePortfolio)
 		auth.GET("/portfolio/:id/nav", MyPortfolioController.GetPortfolioByID)
+		auth.GET("/portfolio/mutual-fund/:id/aggregated", MyPortfolioController.GetAggregatedPortfolioByMutualFundID)
 		auth.POST("/logout", authController.Logout)
+
+		// Prediction endpoints
+		auth.GET("/mutual-funds/:id/predict", predictionController.PredictNAV)
+		auth.GET("/mutual-funds/:id/predict/range", predictionController.PredictNAVRange)
+		auth.POST("/mutual-funds/predict/batch", predictionController.PredictNAVBatch)
+		auth.GET("/prediction/health", predictionController.HealthCheck)
 	}
 
 	// Admin routes
@@ -76,27 +95,5 @@ func SetupRouter() *gin.Engine {
 		admin.GET("/dashboard", userController.AdminEndpoint)
 	}
 
-	
-
 	return router
-}
-
-func RecoveryWithDebug() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		defer func() {
-			if err := recover(); err != nil {
-				stack := debug.Stack()
-				log.Printf("[PANIC RECOVERED] %v\n%s", err, stack)
-
-				// Kirim ke response juga (hanya untuk dev!)
-				c.JSON(500, gin.H{
-					"status":  "error",
-					"message": fmt.Sprintf("panic: %v", err),
-					"stack":   string(stack),
-				})
-				c.Abort()
-			}
-		}()
-		c.Next()
-	}
 }

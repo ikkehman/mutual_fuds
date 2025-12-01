@@ -21,10 +21,10 @@ func main() {
 
 	// Setup router with debug + recovery middleware
 	router := routes.SetupRouter()
-	router.Use(routes.RecoveryWithDebug()) // Tambahkan recovery custom
+	// router.Use(routes.RecoveryWithDebug()) // Tambahkan recovery custom
 
 	// Run server
-	if err := router.Run(":8080"); err != nil {
+	if err := router.Run(":4000"); err != nil {
 		log.Fatal("Failed to start server: ", err)
 	}
 }

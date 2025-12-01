@@ -8,11 +8,27 @@ services:
     environment:
       DB_HOST: db
       REDIS_ADDR: redis:6379
+      PREDICTION_SERVICE_URL: http://0.0.0.0:5001⁠
     depends_on:
       - db
       - redis
+      - prediction-service
     networks:
       - mynet
+
+  prediction-service:
+    build: ./prediction_service
+    ports:
+      - "5001:5001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - mynet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   db:
     image: postgres:15-alpine
