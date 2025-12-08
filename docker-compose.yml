@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   app:
     build: .
@@ -9,6 +7,7 @@ services:
       DB_HOST: db
       REDIS_ADDR: redis:6379
       PREDICTION_SERVICE_URL: http://prediction-service:5001
+      ALLOWED_ORIGINS: "*"  # Ganti dengan domain frontend Anda, misal: https://yourdomain.com
     depends_on:
       - db
       - redis
