@@ -6,10 +6,6 @@ import (
 	"golang/models"
 	"log"
 	"os"
-	"strings"
-	"time"
-
-	"github.com/gin-contrib/cors"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -36,40 +32,31 @@ func SetupRouter() *gin.Engine {
 	// Gunakan hanya satu router
 	router := gin.Default()
 
-	// Tambahkan middleware CORS ke router ini
-	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
-	
-	var corsConfig cors.Config
-	
-	if allowedOrigins == "" || allowedOrigins == "*" {
-		// Allow all origins untuk development
-		corsConfig = cors.Config{
-			AllowAllOrigins:  true,
-			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "X-Requested-With"},
-			ExposeHeaders:    []string{"Content-Length", "Content-Type"},
-			AllowCredentials: false, // Harus false jika AllowAllOrigins true
-			MaxAge:           12 * time.Hour,
-		}
-	} else {
-		// Parse multiple origins dari env (comma separated)
-		// Contoh: ALLOWED_ORIGINS=http://localhost:3000,https://example.com
-		origins := strings.Split(allowedOrigins, ",")
-		for i, origin := range origins {
-			origins[i] = strings.TrimSpace(origin)
+	// CORS middleware - HARUS sebelum semua routes
+	router.Use(func(c *gin.Context) {
+		origin := c.Request.Header.Get("Origin")
+		
+		// Allow all origins
+		if origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+		} else {
+			c.Header("Access-Control-Allow-Origin", "*")
 		}
 		
-		corsConfig = cors.Config{
-			AllowOrigins:     origins,
-			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "X-Requested-With"},
-			ExposeHeaders:    []string{"Content-Length", "Content-Type"},
-			AllowCredentials: true,
-			MaxAge:           12 * time.Hour,
-		}
-	}
+		c.Header("Access-Control-Allow-Credentials", "true")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Accept, X-Requested-With")
+		c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type")
+		c.Header("Access-Control-Max-Age", "43200") // 12 hours
 
-	router.Use(cors.New(corsConfig))
+		// Handle preflight OPTIONS request
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	})
 
 	// Connect to Redis
 	rdb := redis.NewClient(&redis.Options{
