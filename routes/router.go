@@ -6,6 +6,7 @@ import (
 	"golang/models"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -37,18 +38,38 @@ func SetupRouter() *gin.Engine {
 
 	// Tambahkan middleware CORS ke router ini
 	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
-	if allowedOrigins == "" {
-		allowedOrigins = "*" // Default allow all untuk development
+	
+	var corsConfig cors.Config
+	
+	if allowedOrigins == "" || allowedOrigins == "*" {
+		// Allow all origins untuk development
+		corsConfig = cors.Config{
+			AllowAllOrigins:  true,
+			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "X-Requested-With"},
+			ExposeHeaders:    []string{"Content-Length", "Content-Type"},
+			AllowCredentials: false, // Harus false jika AllowAllOrigins true
+			MaxAge:           12 * time.Hour,
+		}
+	} else {
+		// Parse multiple origins dari env (comma separated)
+		// Contoh: ALLOWED_ORIGINS=http://localhost:3000,https://example.com
+		origins := strings.Split(allowedOrigins, ",")
+		for i, origin := range origins {
+			origins[i] = strings.TrimSpace(origin)
+		}
+		
+		corsConfig = cors.Config{
+			AllowOrigins:     origins,
+			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "X-Requested-With"},
+			ExposeHeaders:    []string{"Content-Length", "Content-Type"},
+			AllowCredentials: true,
+			MaxAge:           12 * time.Hour,
+		}
 	}
 
-	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{allowedOrigins},
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "X-Requested-With"},
-		ExposeHeaders:    []string{"Content-Length", "Content-Type"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
-	}))
+	router.Use(cors.New(corsConfig))
 
 	// Connect to Redis
 	rdb := redis.NewClient(&redis.Options{
