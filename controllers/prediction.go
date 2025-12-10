@@ -60,11 +60,11 @@ func NewPredictionController(db *gorm.DB) *PredictionController {
 	// Get prediction service URL from environment or use default
 	serviceURL := os.Getenv("PREDICTION_SERVICE_URL")
 	if serviceURL == "" {
-		serviceURL = "http://0.0.0.0:5001⁠"
+		serviceURL = "http://localhost:5001"
 	}
 
 	return &PredictionController{
-		DB:                  db,
+		DB:                   db,
 		PredictionServiceURL: serviceURL,
 	}
 }
@@ -342,6 +342,13 @@ type PredictionRangeRequest struct {
 	Backtest  bool   `json:"backtest"`
 }
 
+// BacktestRequest structure for backtest prediction
+type BacktestRequest struct {
+	PID       uint   `json:"pid"`
+	StartDate string `json:"start_date"`
+	EndDate   string `json:"end_date"`
+}
+
 // PredictNAVRange predicts NAV for a specific date range
 // @Summary Predict NAV for specific date range
 // @Description Predict NAV values for a mutual fund for a specific date range. Can also backtest with actual data.
@@ -465,6 +472,129 @@ func (pc *PredictionController) PredictNAVRange(c *gin.Context) {
 		return
 	}
 
-	// If parsing fails, forward raw response
+	// If parsing fails, forward raw response for PredictNAVRange
+	c.Data(resp.StatusCode, "application/json", body)
+}
+
+// BacktestNAV performs backtest prediction for past dates and calculates accuracy
+// @Summary Backtest NAV prediction for past dates
+// @Description Predict NAV values for past dates and compare with actual values to calculate accuracy percentage
+// @Tags Prediction
+// @Accept json
+// @Produce json
+// @Param id path int true "Mutual Fund ID"
+// @Param start_date query string true "Start date (YYYY-MM-DD) - must be in the past"
+// @Param end_date query string true "End date (YYYY-MM-DD) - must be in the past"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /mutual-funds/{id}/backtest [get]
+func (pc *PredictionController) BacktestNAV(c *gin.Context) {
+	// Get mutual fund ID from path parameter
+	idParam := c.Param("id")
+	id, err := strconv.ParseUint(idParam, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid mutual fund ID",
+		})
+		return
+	}
+
+	// Get date range from query parameters
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+
+	if startDate == "" || endDate == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "start_date and end_date are required (format: YYYY-MM-DD)",
+			"example": "?start_date=2025-12-01&end_date=2025-12-07",
+		})
+		return
+	}
+
+	// Find mutual fund in database to get PID
+	var mutualFund models.MutualFund
+	if err := pc.DB.First(&mutualFund, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   "Mutual fund not found",
+		})
+		return
+	}
+
+	// Prepare request to prediction service
+	backtestRequest := BacktestRequest{
+		PID:       mutualFund.PID,
+		StartDate: startDate,
+		EndDate:   endDate,
+	}
+
+	jsonData, err := json.Marshal(backtestRequest)
+	if err != nil {
+		log.Printf("Failed to marshal backtest request: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to prepare backtest request",
+		})
+		return
+	}
+
+	// Call prediction service backtest endpoint
+	client := &http.Client{
+		Timeout: 120 * time.Second,
+	}
+
+	req, err := http.NewRequest("POST", pc.PredictionServiceURL+"/predict/backtest", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Failed to create request: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to create backtest request",
+		})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Prediction service request failed: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"error":   "Prediction service is unavailable",
+			"detail":  err.Error(),
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read and forward response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read backtest response: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to read backtest response",
+		})
+		return
+	}
+
+	// Parse response to add mutual fund info
+	var backtestResponse map[string]interface{}
+	if err := json.Unmarshal(body, &backtestResponse); err == nil {
+		// Add mutual fund info to response
+		backtestResponse["mutual_fund"] = gin.H{
+			"id":   mutualFund.ID,
+			"pid":  mutualFund.PID,
+			"name": mutualFund.Name,
+		}
+
+		c.JSON(resp.StatusCode, backtestResponse)
+		return
+	}
+
+	// If parsing fails, forward raw response for BacktestNAV
 	c.Data(resp.StatusCode, "application/json", body)
 }

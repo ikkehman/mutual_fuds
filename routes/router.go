@@ -75,7 +75,6 @@ func SetupRouter() *gin.Engine {
 	{
 		auth.GET("/profile", userController.Profile)
 		auth.GET("/mutual-funds", mutualFundController.GetAll)
-		auth.GET("/mutual-funds/:id", mutualFundController.GetByID)
 		auth.POST("/mutual-funds", mutualFundController.Create)
 		auth.GET("/mutual-fund-nav", bareksaController.GetMutualFundNav)
 		auth.GET("/portfolio", MyPortfolioController.GetPortfolio)
@@ -86,11 +85,15 @@ func SetupRouter() *gin.Engine {
 		auth.GET("/portfolio/mutual-fund/:id/aggregated", MyPortfolioController.GetAggregatedPortfolioByMutualFundID)
 		auth.POST("/logout", authController.Logout)
 
-		// Prediction endpoints
-		auth.GET("/mutual-funds/:id/predict", predictionController.PredictNAV)
-		auth.GET("/mutual-funds/:id/predict/range", predictionController.PredictNAVRange)
+		// Prediction endpoints (more specific routes first)
 		auth.POST("/mutual-funds/predict/batch", predictionController.PredictNAVBatch)
+		auth.GET("/mutual-funds/:id/predict/range", predictionController.PredictNAVRange)
+		auth.GET("/mutual-funds/:id/predict", predictionController.PredictNAV)
+		auth.GET("/mutual-funds/:id/backtest", predictionController.BacktestNAV)
 		auth.GET("/prediction/health", predictionController.HealthCheck)
+
+		// Mutual fund by ID (must be last because :id is a wildcard)
+		auth.GET("/mutual-funds/:id", mutualFundController.GetByID)
 	}
 
 	// Admin routes

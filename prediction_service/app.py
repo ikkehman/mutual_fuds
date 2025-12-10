@@ -875,6 +875,87 @@ def predict_custom():
         }), 500
 
 
+def calculate_accuracy_metrics(predictions):
+    """
+    Menghitung berbagai metrik akurasi untuk backtest
+    
+    Args:
+        predictions: List of prediction dictionaries with 'predicted_nav', 'actual_nav', 'error', 'error_percent'
+    
+    Returns:
+        Dictionary dengan berbagai metrik akurasi
+    """
+    valid_predictions = [p for p in predictions if p['actual_nav'] is not None]
+    
+    if not valid_predictions:
+        return None
+    
+    predicted_values = np.array([p['predicted_nav'] for p in valid_predictions])
+    actual_values = np.array([p['actual_nav'] for p in valid_predictions])
+    errors = predicted_values - actual_values
+    
+    # Mean Absolute Error (MAE)
+    mae = np.mean(np.abs(errors))
+    
+    # Root Mean Square Error (RMSE)
+    rmse = np.sqrt(np.mean(errors ** 2))
+    
+    # Mean Absolute Percentage Error (MAPE)
+    mape = np.mean(np.abs(errors / actual_values)) * 100
+    
+    # Accuracy Percentage (100% - MAPE)
+    accuracy_percent = max(0, 100 - mape)
+    
+    # R-squared (Coefficient of Determination)
+    ss_res = np.sum(errors ** 2)
+    ss_tot = np.sum((actual_values - np.mean(actual_values)) ** 2)
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+    
+    # Direction Accuracy (apakah arah prediksi benar: naik/turun)
+    if len(valid_predictions) > 1:
+        actual_directions = np.sign(np.diff(actual_values))
+        predicted_directions = np.sign(np.diff(predicted_values))
+        direction_accuracy = np.mean(actual_directions == predicted_directions) * 100
+    else:
+        direction_accuracy = None
+    
+    # Max Error
+    max_error = np.max(np.abs(errors))
+    max_error_percent = np.max(np.abs(errors / actual_values)) * 100
+    
+    # Min Error
+    min_error = np.min(np.abs(errors))
+    min_error_percent = np.min(np.abs(errors / actual_values)) * 100
+    
+    # Symmetric Mean Absolute Percentage Error (SMAPE) - lebih robust
+    smape = np.mean(2 * np.abs(errors) / (np.abs(predicted_values) + np.abs(actual_values))) * 100
+    
+    # Theil's U Statistic
+    numerator = np.sqrt(np.mean(errors ** 2))
+    denominator = np.sqrt(np.mean(actual_values ** 2)) + np.sqrt(np.mean(predicted_values ** 2))
+    theils_u = numerator / denominator if denominator != 0 else 0
+    
+    return {
+        'accuracy_percent': round(accuracy_percent, 2),
+        'mean_absolute_error': round(mae, 4),
+        'root_mean_square_error': round(rmse, 4),
+        'mean_absolute_percentage_error': round(mape, 4),
+        'symmetric_mape': round(smape, 4),
+        'r_squared': round(r_squared, 4),
+        'direction_accuracy_percent': round(direction_accuracy, 2) if direction_accuracy is not None else None,
+        'max_error': round(max_error, 4),
+        'max_error_percent': round(max_error_percent, 4),
+        'min_error': round(min_error, 4),
+        'min_error_percent': round(min_error_percent, 4),
+        'theils_u': round(theils_u, 4),
+        'data_points': len(valid_predictions),
+        'interpretation': {
+            'accuracy': 'excellent' if accuracy_percent >= 95 else 'good' if accuracy_percent >= 90 else 'fair' if accuracy_percent >= 80 else 'poor',
+            'r_squared': 'excellent' if r_squared >= 0.9 else 'good' if r_squared >= 0.7 else 'fair' if r_squared >= 0.5 else 'poor'
+        }
+    }
+
+
 @app.route('/predict/range', methods=['POST'])
 def predict_range():
     """
@@ -883,12 +964,18 @@ def predict_range():
     Request body:
     {
         "pid": 123,              // Product ID dari Bareksa
-        "start_date": "2025-11-24",  // Tanggal mulai prediksi
-        "end_date": "2025-11-27",    // Tanggal akhir prediksi
-        "backtest": true         // Jika true, akan membandingkan dengan data aktual (optional)
+        "start_date": "2025-12-01",  // Tanggal mulai prediksi (contoh: 1 Desember 2025)
+        "end_date": "2025-12-07",    // Tanggal akhir prediksi (contoh: 7 Desember 2025)
+        "backtest": true         // Jika true, akan membandingkan dengan data aktual (untuk masa lalu)
     }
     
     Jika backtest=true dan tanggal sudah lewat, akan menampilkan perbandingan prediksi vs aktual
+    beserta perhitungan akurasi dalam persen.
+    
+    Contoh penggunaan untuk prediksi 1-7 Desember:
+    curl -X POST http://localhost:5001/predict/range \
+      -H "Content-Type: application/json" \
+      -d '{"pid": 123, "start_date": "2025-12-01", "end_date": "2025-12-07", "backtest": true}'
     """
     try:
         data = request.get_json()
@@ -933,7 +1020,7 @@ def predict_range():
                 'success': False
             }), 400
         
-        logger.info(f"Fetching NAV data for PID: {pid}, range: {start_date} to {end_date}")
+        logger.info(f"Fetching NAV data for PID: {pid}, range: {start_date} to {end_date}, backtest: {backtest}")
         
         # Fetch historical data
         nav_data = predictor.fetch_nav_data(pid, 730)  # Get 2 years of data
@@ -956,9 +1043,14 @@ def predict_range():
         
         # Check if we should do backtest (dates are in the past and data exists)
         last_data_date = df['date'].max()
+        today = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
         
-        if backtest and end_dt <= last_data_date:
+        # Auto-enable backtest if dates are in the past
+        is_past_dates = end_dt <= last_data_date or end_dt < today
+        
+        if (backtest or is_past_dates) and start_dt <= last_data_date:
             # Backtest mode - compare predictions with actual values
+            logger.info(f"Running backtest mode for dates {start_date} to {end_date}")
             predictions = predictor.predict_with_backtest(df, start_date, end_date)
             
             if not predictions:
@@ -967,16 +1059,14 @@ def predict_range():
                     'success': False
                 }), 500
             
-            # Calculate backtest statistics
-            valid_predictions = [p for p in predictions if p['actual_nav'] is not None]
-            if valid_predictions:
-                mae = np.mean([abs(p['error']) for p in valid_predictions])
-                mape = np.mean([abs(p['error_percent']) for p in valid_predictions])
-            else:
-                mae = None
-                mape = None
+            # Calculate comprehensive accuracy metrics
+            accuracy_metrics = calculate_accuracy_metrics(predictions)
             
-            return jsonify({
+            # Separate predictions with and without actual data
+            predictions_with_actual = [p for p in predictions if p['actual_nav'] is not None]
+            predictions_without_actual = [p for p in predictions if p['actual_nav'] is None]
+            
+            response = {
                 'success': True,
                 'pid': pid,
                 'mode': 'backtest',
@@ -985,14 +1075,25 @@ def predict_range():
                     'end': end_date
                 },
                 'predictions': predictions,
-                'backtest_metrics': {
-                    'mean_absolute_error': round(mae, 2) if mae else None,
-                    'mean_absolute_percentage_error': round(mape, 4) if mape else None,
-                    'data_points': len(valid_predictions)
+                'accuracy_metrics': accuracy_metrics,
+                'summary': {
+                    'total_predictions': len(predictions),
+                    'predictions_with_actual_data': len(predictions_with_actual),
+                    'predictions_without_actual_data': len(predictions_without_actual),
+                    'accuracy_percent': accuracy_metrics['accuracy_percent'] if accuracy_metrics else None,
+                    'interpretation': accuracy_metrics['interpretation'] if accuracy_metrics else None
                 }
-            })
+            }
+            
+            # Add warning if some dates don't have actual data
+            if predictions_without_actual:
+                response['warning'] = f"{len(predictions_without_actual)} dates do not have actual data (possibly weekends/holidays or future dates)"
+            
+            return jsonify(response)
         else:
             # Future prediction mode
+            logger.info(f"Running forecast mode for dates {start_date} to {end_date}")
+            
             # Train model with all available data
             if not predictor.train_model(df):
                 return jsonify({
@@ -1038,11 +1139,158 @@ def predict_range():
                     'change_percent': round(change_percent, 4),
                     'prediction_days': len(predictions),
                     'data_points_used': len(df)
-                }
+                },
+                'note': 'This is a forecast for future dates. Actual accuracy cannot be calculated until dates have passed.'
             })
         
     except Exception as e:
         logger.error(f"Range prediction error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': str(e),
+            'success': False
+        }), 500
+
+
+@app.route('/predict/backtest', methods=['POST'])
+def predict_backtest():
+    """
+    Endpoint khusus untuk backtest prediksi di masa lalu
+    
+    Request body:
+    {
+        "pid": 123,              // Product ID dari Bareksa
+        "start_date": "2025-12-01",  // Tanggal mulai (contoh: 1 Desember 2025)
+        "end_date": "2025-12-07"     // Tanggal akhir (contoh: 7 Desember 2025)
+    }
+    
+    Response akan berisi:
+    - predictions: list prediksi dengan nilai aktual
+    - accuracy_metrics: metrik akurasi lengkap termasuk accuracy_percent
+    
+    Contoh:
+    curl -X POST http://localhost:5001/predict/backtest \
+      -H "Content-Type: application/json" \
+      -d '{"pid": 123, "start_date": "2025-12-01", "end_date": "2025-12-07"}'
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'pid' not in data:
+            return jsonify({
+                'error': 'Missing required field: pid',
+                'success': False
+            }), 400
+        
+        if 'start_date' not in data or 'end_date' not in data:
+            return jsonify({
+                'error': 'Missing required fields: start_date and end_date',
+                'success': False
+            }), 400
+        
+        pid = data['pid']
+        start_date = data['start_date']
+        end_date = data['end_date']
+        
+        # Validate dates
+        try:
+            start_dt = pd.to_datetime(start_date)
+            end_dt = pd.to_datetime(end_date)
+        except:
+            return jsonify({
+                'error': 'Invalid date format. Use YYYY-MM-DD',
+                'success': False
+            }), 400
+        
+        if start_dt > end_dt:
+            return jsonify({
+                'error': 'start_date must be before or equal to end_date',
+                'success': False
+            }), 400
+        
+        # Limit to 30 days max
+        if (end_dt - start_dt).days > 30:
+            return jsonify({
+                'error': 'Maximum backtest range is 30 days',
+                'success': False
+            }), 400
+        
+        logger.info(f"Running backtest for PID: {pid}, range: {start_date} to {end_date}")
+        
+        # Fetch historical data
+        nav_data = predictor.fetch_nav_data(pid, 730)  # Get 2 years of data
+        
+        if not nav_data:
+            return jsonify({
+                'error': 'Failed to fetch NAV data from Bareksa',
+                'success': False
+            }), 500
+        
+        # Prepare data
+        df = predictor.prepare_data(nav_data)
+        
+        if df is None or len(df) < 50:
+            return jsonify({
+                'error': 'Insufficient historical data for prediction',
+                'success': False,
+                'data_points': len(df) if df is not None else 0
+            }), 400
+        
+        # Check if dates are in the past (have actual data)
+        last_data_date = df['date'].max()
+        
+        if start_dt > last_data_date:
+            return jsonify({
+                'error': f'Start date must be on or before {last_data_date.strftime("%Y-%m-%d")} for backtest. Use /predict/range for future predictions.',
+                'success': False
+            }), 400
+        
+        # Run backtest
+        predictions = predictor.predict_with_backtest(df, start_date, end_date)
+        
+        if not predictions:
+            return jsonify({
+                'error': 'Failed to generate backtest predictions',
+                'success': False
+            }), 500
+        
+        # Calculate comprehensive accuracy metrics
+        accuracy_metrics = calculate_accuracy_metrics(predictions)
+        
+        # Separate predictions with and without actual data
+        predictions_with_actual = [p for p in predictions if p['actual_nav'] is not None]
+        predictions_without_actual = [p for p in predictions if p['actual_nav'] is None]
+        
+        response = {
+            'success': True,
+            'pid': pid,
+            'mode': 'backtest',
+            'date_range': {
+                'start': start_date,
+                'end': end_date
+            },
+            'predictions': predictions,
+            'accuracy_metrics': accuracy_metrics,
+            'summary': {
+                'total_predictions': len(predictions),
+                'predictions_with_actual_data': len(predictions_with_actual),
+                'predictions_without_actual_data': len(predictions_without_actual),
+                'accuracy_percent': accuracy_metrics['accuracy_percent'] if accuracy_metrics else None,
+                'mape': accuracy_metrics['mean_absolute_percentage_error'] if accuracy_metrics else None,
+                'r_squared': accuracy_metrics['r_squared'] if accuracy_metrics else None,
+                'interpretation': accuracy_metrics['interpretation'] if accuracy_metrics else None
+            }
+        }
+        
+        # Add warning if some dates don't have actual data
+        if predictions_without_actual:
+            response['warning'] = f"{len(predictions_without_actual)} dates do not have actual data (possibly weekends/holidays or future dates)"
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Backtest error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({
