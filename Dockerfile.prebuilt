@@ -1,0 +1,16 @@
+# Dockerfile untuk binary yang sudah di-build
+FROM alpine:latest
+WORKDIR /app
+
+# Install ca-certificates untuk HTTPS requests
+RUN apk --no-cache add ca-certificates tzdata
+
+# Copy pre-built binary
+COPY main-linux ./main
+COPY .env .
+
+# Make executable
+RUN chmod +x ./main
+
+EXPOSE 4000
+CMD ["./main"]
